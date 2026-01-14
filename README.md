@@ -51,7 +51,7 @@ There is no runtime to start or stop. GCD manages thread pools and scheduling.
 
 - Apple platforms only (macOS, iOS, etc.)
 - No priority control yet (uses default queue priority)
-- No `block_on` for synchronously waiting on futures
+- No `block_on` for synchronously waiting on futures. (use `futures::block_on`)
 
 ## Attribution
 
