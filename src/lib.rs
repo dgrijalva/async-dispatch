@@ -7,7 +7,11 @@ use std::{
     future::Future,
     pin::Pin,
     ptr::NonNull,
-    task::{Context, Poll},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
+    task::{Context, Poll, Waker},
     time::Duration,
 };
 
@@ -74,9 +78,6 @@ where
     F: Future<Output = T> + Send + 'static,
     T: Send + 'static,
 {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
-
     let first_schedule = Arc::new(AtomicBool::new(true));
     let (runnable, task) = async_task::spawn(future, move |runnable: async_task::Runnable<()>| {
         let ptr = runnable.into_raw().as_ptr() as *mut c_void;
@@ -121,6 +122,97 @@ where
     });
     runnable.schedule();
     Task(task)
+}
+
+/// Returns a future that completes after the specified duration.
+///
+/// This is the async equivalent of `std::thread::sleep`. The timer is
+/// managed by GCD and does not block any threads while waiting.
+///
+/// Note: The timer cannot be cancelled. If the `Sleep` future is dropped
+/// before completion, the underlying GCD timer still fires but does nothing.
+pub fn sleep(duration: Duration) -> Sleep {
+    Sleep {
+        duration,
+        state: None,
+    }
+}
+
+/// A future that completes after a duration.
+///
+/// Created by the [`sleep`] function.
+pub struct Sleep {
+    duration: Duration,
+    state: Option<Arc<SleepState>>,
+}
+
+struct SleepState {
+    waker: Mutex<Option<Waker>>,
+    completed: AtomicBool,
+}
+
+impl Future for Sleep {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        // If we haven't started the timer yet, do so now
+        if self.state.is_none() {
+            let state = Arc::new(SleepState {
+                waker: Mutex::new(Some(cx.waker().clone())),
+                completed: AtomicBool::new(false),
+            });
+
+            // Clone for GCD to own
+            let gcd_state = Arc::clone(&state);
+            let ptr = Arc::into_raw(gcd_state) as *mut c_void;
+
+            // SAFETY: We call GCD's dispatch_after_f with:
+            // - A valid dispatch_time computed from DISPATCH_TIME_NOW
+            // - A valid global queue handle from dispatch_get_global_queue
+            // - A pointer from Arc::into_raw() which transfers one ref count to GCD
+            // - sleep_trampoline, which will call Arc::from_raw() exactly once
+            unsafe {
+                let when = sys::dispatch_time(
+                    sys::DISPATCH_TIME_NOW as u64,
+                    self.duration.as_nanos() as i64,
+                );
+                sys::dispatch_after_f(
+                    when,
+                    sys::dispatch_get_global_queue(
+                        sys::DISPATCH_QUEUE_PRIORITY_DEFAULT as isize,
+                        0,
+                    ),
+                    ptr,
+                    Some(sleep_trampoline),
+                );
+            }
+
+            self.state = Some(state);
+            return Poll::Pending;
+        }
+
+        // Timer already started - check if it's completed
+        let state = self.state.as_ref().unwrap();
+        if state.completed.load(Ordering::SeqCst) {
+            Poll::Ready(())
+        } else {
+            // Update the waker in case it changed
+            *state.waker.lock().unwrap() = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+}
+
+extern "C" fn sleep_trampoline(context: *mut c_void) {
+    // SAFETY: This pointer was created by Arc::into_raw() in Sleep::poll.
+    // GCD calls this exactly once, so we reclaim the Arc reference here.
+    let state = unsafe { Arc::from_raw(context as *const SleepState) };
+    state.completed.store(true, Ordering::SeqCst);
+    let waker = state.waker.lock().unwrap().take();
+    drop(state);
+    if let Some(waker) = waker {
+        waker.wake();
+    }
 }
 
 fn dispatch_get_main_queue() -> sys::dispatch_queue_t {
@@ -218,5 +310,69 @@ mod tests {
             "expected at least 100ms delay, got {:?}",
             elapsed
         );
+    }
+
+    #[test]
+    fn test_sleep() {
+        let (tx, rx) = mpsc::channel();
+        let start = std::time::Instant::now();
+
+        spawn(async move {
+            sleep(Duration::from_millis(100)).await;
+            tx.send(()).unwrap();
+        })
+        .detach();
+
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed >= Duration::from_millis(100),
+            "expected at least 100ms delay, got {:?}",
+            elapsed
+        );
+    }
+
+    #[test]
+    fn test_sleep_zero_duration() {
+        let (tx, rx) = mpsc::channel();
+
+        spawn(async move {
+            sleep(Duration::ZERO).await;
+            tx.send(()).unwrap();
+        })
+        .detach();
+
+        // Should complete nearly immediately
+        rx.recv_timeout(Duration::from_millis(100)).unwrap();
+    }
+
+    #[test]
+    fn test_sleep_drop_before_completion() {
+        // Drop a task with a pending sleep, then wait for the GCD timer to fire.
+        // This tests that the trampoline handles the orphaned timer gracefully.
+        let (tx, rx) = mpsc::channel();
+
+        // Spawn a task that will sleep for 200ms
+        let task = spawn(async {
+            sleep(Duration::from_millis(200)).await;
+        });
+
+        // Give it time to start and schedule the GCD timer
+        std::thread::sleep(Duration::from_millis(10));
+
+        // Drop the task, cancelling it before the sleep completes
+        drop(task);
+
+        // Now spawn another task that waits long enough for the original
+        // GCD timer to have fired
+        spawn(async move {
+            sleep(Duration::from_millis(300)).await;
+            // If we get here without crashing, the orphaned timer was handled safely
+            tx.send(()).unwrap();
+        })
+        .detach();
+
+        rx.recv_timeout(Duration::from_secs(1)).unwrap();
     }
 }

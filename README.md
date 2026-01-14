@@ -7,7 +7,7 @@ Instead of managing your own async runtime (like tokio), this crate hands off ta
 ## Usage
 
 ```rust
-use async_dispatch::{spawn, spawn_on_main, spawn_after};
+use async_dispatch::{spawn, spawn_on_main, spawn_after, sleep};
 use std::time::Duration;
 
 // Spawn on a background queue
@@ -28,6 +28,13 @@ let task = spawn_after(Duration::from_secs(5), async {
 
 // Await the result or detach to run in background
 let result = task.await;
+
+// Sleep within an async context
+spawn(async {
+    do_something();
+    sleep(Duration::from_secs(1)).await;
+    do_something_else();
+}).detach();
 ```
 
 ## Task lifecycle

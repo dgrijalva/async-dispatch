@@ -1,6 +1,6 @@
 [package]
 name = "async-dispatch"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Async task dispatch via Grand Central Dispatch"
