@@ -82,6 +82,11 @@ where
         let ptr = runnable.into_raw().as_ptr() as *mut c_void;
 
         if first_schedule.swap(false, Ordering::SeqCst) {
+            // SAFETY: We call GCD's dispatch_after_f with:
+            // - A valid dispatch_time computed from DISPATCH_TIME_NOW
+            // - A valid global queue handle from dispatch_get_global_queue
+            // - A pointer from Runnable::into_raw() which transfers ownership to GCD
+            // - trampoline, which will reconstruct the Runnable exactly once
             unsafe {
                 let when = sys::dispatch_time(
                     sys::DISPATCH_TIME_NOW as u64,
@@ -98,6 +103,10 @@ where
                 );
             }
         } else {
+            // SAFETY: We call GCD's dispatch_async_f with:
+            // - A valid global queue handle from dispatch_get_global_queue
+            // - A pointer from Runnable::into_raw() which transfers ownership to GCD
+            // - trampoline, which will reconstruct the Runnable exactly once
             unsafe {
                 sys::dispatch_async_f(
                     sys::dispatch_get_global_queue(
@@ -120,6 +129,10 @@ fn dispatch_get_main_queue() -> sys::dispatch_queue_t {
 
 fn schedule_background(runnable: async_task::Runnable<()>) {
     let ptr = runnable.into_raw().as_ptr() as *mut c_void;
+    // SAFETY: We call GCD's dispatch_async_f with:
+    // - A valid global queue handle from dispatch_get_global_queue
+    // - A pointer from Runnable::into_raw() which transfers ownership to GCD
+    // - trampoline, which will reconstruct the Runnable exactly once
     unsafe {
         sys::dispatch_async_f(
             sys::dispatch_get_global_queue(sys::DISPATCH_QUEUE_PRIORITY_DEFAULT as isize, 0),
@@ -131,12 +144,21 @@ fn schedule_background(runnable: async_task::Runnable<()>) {
 
 fn schedule_main(runnable: async_task::Runnable<()>) {
     let ptr = runnable.into_raw().as_ptr() as *mut c_void;
+    // SAFETY: We call GCD's dispatch_async_f with:
+    // - The main queue handle (a valid static queue)
+    // - A pointer from Runnable::into_raw() which transfers ownership to GCD
+    // - trampoline, which will reconstruct the Runnable exactly once
     unsafe {
         sys::dispatch_async_f(dispatch_get_main_queue(), ptr, Some(trampoline));
     }
 }
 
 extern "C" fn trampoline(context: *mut c_void) {
+    // SAFETY: This function is only called by GCD with a pointer that was created
+    // by Runnable::into_raw() in one of the schedule functions. GCD guarantees:
+    // - The pointer is passed exactly once per dispatch
+    // - The pointer value is unchanged from what we provided
+    // We reconstruct the Runnable, taking back ownership, and run it.
     let runnable =
         unsafe { async_task::Runnable::<()>::from_raw(NonNull::new_unchecked(context as *mut ())) };
     runnable.run();
