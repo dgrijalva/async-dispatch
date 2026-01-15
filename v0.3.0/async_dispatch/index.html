@@ -1,0 +1,58 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="async-dispatch"><title>async_dispatch - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-ca0dd0c4.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="async_dispatch" data-themes="" data-resource-suffix="" data-rustdoc-version="1.92.0 (ded5c06cf 2025-12-08)" data-channel="1.92.0" data-search-js="search-d69d8955.js" data-stringdex-js="stringdex-c3e638e9.js" data-settings-js="settings-c38705f0.js" ><script src="../static.files/storage-e2aeef58.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-ce535bd0.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate async_dispatch</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../async_dispatch/index.html">async_<wbr>dispatch</a><span class="version">0.3.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#async-dispatch" title="async-dispatch">async-dispatch</a><ul><li><a href="#documentation" title="Documentation">Documentation</a></li><li><a href="#usage" title="Usage">Usage</a></li><li><a href="#task-lifecycle" title="Task lifecycle">Task lifecycle</a></li><li><a href="#requirements" title="Requirements">Requirements</a></li><li><a href="#how-it-works" title="How it works">How it works</a></li><li><a href="#limitations" title="Limitations">Limitations</a></li><li><a href="#attribution" title="Attribution">Attribution</a></li></ul></li></ul><h3><a href="#structs">Crate Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><h1>Crate <span>async_<wbr>dispatch</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/async_dispatch/lib.rs.html#1-432">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><h2 id="async-dispatch"><a class="doc-anchor" href="#async-dispatch">§</a>async-dispatch</h2>
+<p>Async task dispatch via Grand Central Dispatch (GCD) for Apple platforms.</p>
+<p>Instead of managing your own async runtime (like tokio), this crate hands off task scheduling to the operating system’s native dispatch queues. You spawn futures; GCD handles the rest.</p>
+<h3 id="documentation"><a class="doc-anchor" href="#documentation">§</a>Documentation</h3>
+<p><a href="https://dgrijalva.github.io/async-dispatch">API docs</a> are hosted on GitHub Pages. Since this crate only builds on Apple platforms, docs.rs cannot generate documentation for it.</p>
+<h3 id="usage"><a class="doc-anchor" href="#usage">§</a>Usage</h3>
+<div class="example-wrap ignore"><a href="#" class="tooltip" title="This example is not tested">ⓘ</a><pre class="rust rust-example-rendered"><code><span class="kw">use </span>async_dispatch::{spawn, spawn_on_main, spawn_after, sleep, JoinError};
+<span class="kw">use </span>std::time::Duration;
+
+<span class="comment">// Spawn on a background queue and await the result
+</span>spawn(<span class="kw">async </span>{
+    <span class="kw">let </span>task = spawn(<span class="kw">async </span>{
+        expensive_computation().<span class="kw">await
+    </span>});
+
+    <span class="comment">// Await returns Result&lt;T, JoinError&gt;
+    </span><span class="kw">let </span>result = task.<span class="kw">await</span>.unwrap();
+});
+
+<span class="comment">// Spawn on the main thread (for UI work)
+</span>spawn_on_main(<span class="kw">async </span>{
+    update_ui()
+});
+
+<span class="comment">// Spawn after a delay
+</span>spawn_after(Duration::from_secs(<span class="number">5</span>), <span class="kw">async </span>{
+    delayed_work().<span class="kw">await
+</span>});
+
+<span class="comment">// Sleep within an async context
+</span>spawn(<span class="kw">async </span>{
+    do_something();
+    sleep(Duration::from_secs(<span class="number">1</span>)).<span class="kw">await</span>;
+    do_something_else();
+});</code></pre></div><h3 id="task-lifecycle"><a class="doc-anchor" href="#task-lifecycle">§</a>Task lifecycle</h3>
+<ul>
+<li><code>task.await</code> - wait for completion, returns <code>Result&lt;T, JoinError&gt;</code></li>
+<li><code>task.abort()</code> - cancel the task; awaiting returns <code>Err(JoinError::Aborted)</code></li>
+<li>dropping a task lets it run to completion (like tokio’s <code>JoinHandle</code>)</li>
+</ul>
+<h3 id="requirements"><a class="doc-anchor" href="#requirements">§</a>Requirements</h3>
+<ul>
+<li>macOS or iOS (uses libdispatch)</li>
+<li>Rust 2021 edition</li>
+</ul>
+<h3 id="how-it-works"><a class="doc-anchor" href="#how-it-works">§</a>How it works</h3>
+<p>The crate uses <a href="https://docs.rs/async-task">async-task</a> to convert Rust futures into raw function pointers that can be passed to GCD’s <code>dispatch_async_f</code>. When GCD executes the function, it polls the future. If the future yields, subsequent wakeups are dispatched back to GCD.</p>
+<p>There is no runtime to start or stop. GCD manages thread pools and scheduling.</p>
+<h3 id="limitations"><a class="doc-anchor" href="#limitations">§</a>Limitations</h3>
+<ul>
+<li>Apple platforms only (macOS, iOS, etc.)</li>
+<li>No priority control yet (uses default queue priority)</li>
+<li>No <code>block_on</code> for synchronously waiting on futures. (use <code>futures::block_on</code>)</li>
+<li>No async IO primitives provided (files, network, etc)</li>
+</ul>
+<h3 id="attribution"><a class="doc-anchor" href="#attribution">§</a>Attribution</h3>
+<p>This approach is based on the dispatcher implementation in <a href="https://github.com/zed-industries/zed/tree/main/crates/gpui">Zed’s gpui crate</a>, which uses GCD for async task scheduling on macOS. The gpui crate is licensed under Apache-2.0.</p>
+</div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.Sleep.html" title="struct async_dispatch::Sleep">Sleep</a></dt><dd>A future that completes after a duration.</dd><dt><a class="struct" href="struct.Task.html" title="struct async_dispatch::Task">Task</a></dt><dd>A handle to a spawned task that can be awaited for its result.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.JoinError.html" title="enum async_dispatch::JoinError">Join<wbr>Error</a></dt><dd>Error returned when awaiting a task that cannot produce a result.</dd></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.sleep.html" title="fn async_dispatch::sleep">sleep</a></dt><dd>Returns a future that completes after the specified duration.</dd><dt><a class="fn" href="fn.spawn.html" title="fn async_dispatch::spawn">spawn</a></dt><dd>Spawn a future on a background GCD queue.</dd><dt><a class="fn" href="fn.spawn_after.html" title="fn async_dispatch::spawn_after">spawn_<wbr>after</a></dt><dd>Spawn a future on a background queue after a delay.</dd><dt><a class="fn" href="fn.spawn_on_main.html" title="fn async_dispatch::spawn_on_main">spawn_<wbr>on_<wbr>main</a></dt><dd>Spawn a future on the main thread’s dispatch queue.</dd></dl></section></div></main></body></html>
