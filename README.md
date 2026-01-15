@@ -4,6 +4,10 @@ Async task dispatch via Grand Central Dispatch (GCD) for Apple platforms.
 
 Instead of managing your own async runtime (like tokio), this crate hands off task scheduling to the operating system's native dispatch queues. You spawn futures; GCD handles the rest.
 
+## Documentation
+
+[API docs](https://dgrijalva.github.io/async-dispatch) are hosted on GitHub Pages. Since this crate only builds on Apple platforms, docs.rs cannot generate documentation for it.
+
 ## Usage
 
 ```rust

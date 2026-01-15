@@ -5,6 +5,7 @@ edition = "2021"
 license = "Apache-2.0"
 description = "Async task dispatch via Grand Central Dispatch"
 repository = "https://github.com/dgrijalva/async-dispatch"
+documentation = "https://dgrijalva.github.io/async-dispatch"
 readme = "README.md"
 keywords = ["async", "gcd", "dispatch", "macos"]
 categories = ["asynchronous", "os::macos-apis"]
