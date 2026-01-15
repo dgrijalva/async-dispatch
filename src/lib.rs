@@ -21,26 +21,71 @@ mod sys {
     include!(concat!(env!("OUT_DIR"), "/dispatch_sys.rs"));
 }
 
-/// A handle to a spawned task that can be awaited or detached.
+/// Error returned when awaiting a task that cannot produce a result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinError {
+    /// The task was aborted before completion.
+    Aborted,
+    /// The task was polled after already returning a result.
+    PollAfterReady,
+}
+
+impl std::fmt::Display for JoinError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JoinError::Aborted => write!(f, "task was aborted"),
+            JoinError::PollAfterReady => write!(f, "task polled after completion"),
+        }
+    }
+}
+
+impl std::error::Error for JoinError {}
+
+enum TaskState<T> {
+    Running(async_task::Task<T>),
+    Completed,
+    Aborted,
+}
+
+/// A handle to a spawned task that can be awaited for its result.
 ///
-/// If dropped without calling `detach()`, the task continues running
-/// but its result is discarded.
-#[must_use = "tasks are cancelled when dropped, use .detach() to run in background"]
-pub struct Task<T>(async_task::Task<T>);
+/// Dropping a Task without awaiting it allows the task to continue running
+/// in the background; the result is simply discarded. This matches tokio's
+/// `JoinHandle` semantics.
+pub struct Task<T>(TaskState<T>);
 
 impl<T> Task<T> {
-    /// Detach the task, allowing it to run to completion in the background.
-    /// The result will be discarded.
-    pub fn detach(self) {
-        self.0.detach()
+    /// Abort the task, cancelling it at the next yield point.
+    ///
+    /// After calling abort, awaiting this task will return `Err(JoinError::Aborted)`.
+    pub fn abort(&mut self) {
+        self.0 = TaskState::Aborted;
+    }
+}
+
+impl<T> Drop for Task<T> {
+    fn drop(&mut self) {
+        if let TaskState::Running(task) = std::mem::replace(&mut self.0, TaskState::Completed) {
+            task.detach();
+        }
     }
 }
 
 impl<T> Future for Task<T> {
-    type Output = T;
+    type Output = Result<T, JoinError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.0).poll(cx)
+        match &mut self.0 {
+            TaskState::Running(task) => match Pin::new(task).poll(cx) {
+                Poll::Ready(val) => {
+                    self.0 = TaskState::Completed;
+                    Poll::Ready(Ok(val))
+                }
+                Poll::Pending => Poll::Pending,
+            },
+            TaskState::Completed => Poll::Ready(Err(JoinError::PollAfterReady)),
+            TaskState::Aborted => Poll::Ready(Err(JoinError::Aborted)),
+        }
     }
 }
 
@@ -54,7 +99,7 @@ where
 {
     let (runnable, task) = async_task::spawn(future, schedule_background);
     runnable.schedule();
-    Task(task)
+    Task(TaskState::Running(task))
 }
 
 /// Spawn a future on the main thread's dispatch queue.
@@ -67,7 +112,7 @@ where
 {
     let (runnable, task) = async_task::spawn_local(future, schedule_main);
     runnable.schedule();
-    Task(task)
+    Task(TaskState::Running(task))
 }
 
 /// Spawn a future on a background queue after a delay.
@@ -90,10 +135,8 @@ where
             // - A pointer from Runnable::into_raw() which transfers ownership to GCD
             // - trampoline, which will reconstruct the Runnable exactly once
             unsafe {
-                let when = sys::dispatch_time(
-                    sys::DISPATCH_TIME_NOW as u64,
-                    duration.as_nanos() as i64,
-                );
+                let when =
+                    sys::dispatch_time(sys::DISPATCH_TIME_NOW as u64, duration.as_nanos() as i64);
                 sys::dispatch_after_f(
                     when,
                     sys::dispatch_get_global_queue(
@@ -122,7 +165,7 @@ where
         }
     });
     runnable.schedule();
-    Task(task)
+    Task(TaskState::Running(task))
 }
 
 /// Returns a future that completes after the specified duration.
@@ -264,116 +307,126 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn test_spawn_runs_future() {
+    fn test_spawn_await() {
+        let task = spawn(async { 42 });
+        let result = pollster::block_on(task);
+        assert_eq!(result, Ok(42));
+    }
+
+    #[test]
+    fn test_spawn_drop_continues() {
+        // Dropping a task lets it continue running (detach-on-drop)
         let (tx, rx) = mpsc::channel();
 
-        spawn(async move {
+        drop(spawn(async move {
             tx.send(42).unwrap();
-        })
-        .detach();
+        }));
 
         let result = rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(result, 42);
     }
 
     #[test]
-    fn test_spawn_returns_value() {
-        let (tx, rx) = mpsc::channel();
-
-        let task = spawn(async { 123 });
-
-        // Spawn another task to await the first and send result
-        spawn(async move {
-            let value = task.await;
-            tx.send(value).unwrap();
-        })
-        .detach();
-
-        let result = rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        assert_eq!(result, 123);
-    }
-
-    #[test]
     fn test_spawn_after_delays() {
-        let (tx, rx) = mpsc::channel();
         let start = std::time::Instant::now();
 
-        spawn_after(Duration::from_millis(100), async move {
-            tx.send(()).unwrap();
-        })
-        .detach();
+        let task = spawn_after(Duration::from_millis(100), async { 123 });
+        let result = pollster::block_on(task);
 
-        rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        let elapsed = start.elapsed();
-
+        assert_eq!(result, Ok(123));
         assert!(
-            elapsed >= Duration::from_millis(100),
+            start.elapsed() >= Duration::from_millis(100),
             "expected at least 100ms delay, got {:?}",
-            elapsed
+            start.elapsed()
         );
     }
 
     #[test]
     fn test_sleep() {
-        let (tx, rx) = mpsc::channel();
         let start = std::time::Instant::now();
 
-        spawn(async move {
+        let task = spawn(async {
             sleep(Duration::from_millis(100)).await;
-            tx.send(()).unwrap();
-        })
-        .detach();
+            "done"
+        });
+        let result = pollster::block_on(task);
 
-        rx.recv_timeout(Duration::from_secs(1)).unwrap();
-        let elapsed = start.elapsed();
-
+        assert_eq!(result, Ok("done"));
         assert!(
-            elapsed >= Duration::from_millis(100),
+            start.elapsed() >= Duration::from_millis(100),
             "expected at least 100ms delay, got {:?}",
-            elapsed
+            start.elapsed()
         );
     }
 
     #[test]
     fn test_sleep_zero_duration() {
-        let (tx, rx) = mpsc::channel();
-
-        spawn(async move {
+        let task = spawn(async {
             sleep(Duration::ZERO).await;
-            tx.send(()).unwrap();
-        })
-        .detach();
-
-        // Should complete nearly immediately
-        rx.recv_timeout(Duration::from_millis(100)).unwrap();
+            "done"
+        });
+        let result = pollster::block_on(task);
+        assert_eq!(result, Ok("done"));
     }
 
     #[test]
-    fn test_sleep_drop_before_completion() {
-        // Drop a task with a pending sleep, then wait for the GCD timer to fire.
-        // This tests that the trampoline handles the orphaned timer gracefully.
+    fn test_abort() {
         let (tx, rx) = mpsc::channel();
 
-        // Spawn a task that will sleep for 200ms
-        let task = spawn(async {
+        let mut task = spawn(async move {
             sleep(Duration::from_millis(200)).await;
+            tx.send(()).unwrap();
+            42
         });
 
-        // Give it time to start and schedule the GCD timer
+        // Give it time to start
         std::thread::sleep(Duration::from_millis(10));
 
-        // Drop the task, cancelling it before the sleep completes
-        drop(task);
+        task.abort();
 
-        // Now spawn another task that waits long enough for the original
-        // GCD timer to have fired
-        spawn(async move {
-            sleep(Duration::from_millis(300)).await;
-            // If we get here without crashing, the orphaned timer was handled safely
-            tx.send(()).unwrap();
-        })
-        .detach();
+        // The channel should never receive (task was cancelled)
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
 
-        rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        // Awaiting returns Aborted
+        let result = pollster::block_on(task);
+        assert_eq!(result, Err(JoinError::Aborted));
+    }
+
+    #[test]
+    fn test_nested_spawn_await() {
+        let task = spawn(async {
+            let inner = spawn(async { 42 });
+            inner.await.unwrap() + 1
+        });
+
+        let result = pollster::block_on(task);
+        assert_eq!(result, Ok(43));
+    }
+
+    #[test]
+    fn test_poll_after_ready() {
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::task::{Context, Poll, Waker};
+
+        let mut task = spawn(async { 1 });
+
+        // Poll to completion
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(&waker);
+        loop {
+            match Pin::new(&mut task).poll(&mut cx) {
+                Poll::Ready(Ok(1)) => break,
+                Poll::Ready(other) => panic!("unexpected result: {:?}", other),
+                Poll::Pending => std::thread::yield_now(),
+            }
+        }
+
+        // Poll again after ready
+        let result = Pin::new(&mut task).poll(&mut cx);
+        assert!(matches!(
+            result,
+            Poll::Ready(Err(JoinError::PollAfterReady))
+        ));
     }
 }

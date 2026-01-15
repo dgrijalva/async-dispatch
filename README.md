@@ -10,42 +10,43 @@ Instead of managing your own async runtime (like tokio), this crate hands off ta
 
 ## Usage
 
-```rust
-use async_dispatch::{spawn, spawn_on_main, spawn_after, sleep};
+```rust,ignore
+use async_dispatch::{spawn, spawn_on_main, spawn_after, sleep, JoinError};
 use std::time::Duration;
 
-// Spawn on a background queue
-let task = spawn(async {
-    // runs on GCD's global concurrent queue
-    expensive_computation()
+// Spawn on a background queue and await the result
+spawn(async {
+    let task = spawn(async {
+        expensive_computation().await
+    });
+
+    // Await returns Result<T, JoinError>
+    let result = task.await.unwrap();
 });
 
 // Spawn on the main thread (for UI work)
 spawn_on_main(async {
     update_ui()
-}).detach();
-
-// Spawn after a delay
-let task = spawn_after(Duration::from_secs(5), async {
-    delayed_work()
 });
 
-// Await the result or detach to run in background
-let result = task.await;
+// Spawn after a delay
+spawn_after(Duration::from_secs(5), async {
+    delayed_work().await
+});
 
 // Sleep within an async context
 spawn(async {
     do_something();
     sleep(Duration::from_secs(1)).await;
     do_something_else();
-}).detach();
+});
 ```
 
 ## Task lifecycle
 
-- `task.await` - wait for completion and get the result
-- `task.detach()` - let it run to completion, discard the result
-- dropping a task cancels it
+- `task.await` - wait for completion, returns `Result<T, JoinError>`
+- `task.abort()` - cancel the task; awaiting returns `Err(JoinError::Aborted)`
+- dropping a task lets it run to completion (like tokio's `JoinHandle`)
 
 ## Requirements
 
@@ -63,6 +64,7 @@ There is no runtime to start or stop. GCD manages thread pools and scheduling.
 - Apple platforms only (macOS, iOS, etc.)
 - No priority control yet (uses default queue priority)
 - No `block_on` for synchronously waiting on futures. (use `futures::block_on`)
+- No async IO primitives provided (files, network, etc)
 
 ## Attribution
 

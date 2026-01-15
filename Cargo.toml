@@ -1,6 +1,6 @@
 [package]
 name = "async-dispatch"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 license = "Apache-2.0"
 description = "Async task dispatch via Grand Central Dispatch"
@@ -18,3 +18,6 @@ async-task = "4"
 
 [build-dependencies]
 bindgen = "0.71"
+
+[dev-dependencies]
+pollster = "0.4"
