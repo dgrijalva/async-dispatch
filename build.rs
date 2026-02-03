@@ -31,17 +31,21 @@ fn main() {
         let sdk_path = String::from_utf8(sdk_path).unwrap();
         let sdk_path = sdk_path.trim();
 
+        let min_version =
+            std::env::var("IPHONEOS_DEPLOYMENT_TARGET").unwrap_or_else(|_| "12.0".to_string());
+
         let clang_target = if target.ends_with("-sim") {
-            "arm64-apple-ios-simulator"
+            format!("arm64-apple-ios{}-simulator", min_version)
         } else if target.starts_with("aarch64") {
-            "arm64-apple-ios"
+            format!("arm64-apple-ios{}", min_version)
         } else {
-            "x86_64-apple-ios"
+            format!("x86_64-apple-ios{}", min_version)
         };
 
         builder = builder
             .clang_arg(format!("--target={}", clang_target))
-            .clang_arg(format!("-isysroot{}", sdk_path));
+            .clang_arg(format!("-isysroot{}", sdk_path))
+            .clang_arg("-fvisibility=default");
     }
 
     let bindings = builder
